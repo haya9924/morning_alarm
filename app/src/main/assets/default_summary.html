@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>朝のまとめ</title>
+  <!--
+    このHTMLはアプリ内の「朝のまとめ」編集画面から変更できます。
+    安全のため、JavaScript・外部ネットワーク・ローカルファイル参照は無効化されます。
+    インラインCSSと data: 画像のみ利用できます。
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fff8f0;
+      --card: #ffffff;
+      --ink: #2b2118;
+      --muted: #7a6a5a;
+      --accent: #e65100;
+      --line: #f0dfcc;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16120f;
+        --card: #201a15;
+        --ink: #f6ece2;
+        --muted: #b9a898;
+        --accent: #ffb74d;
+        --line: #3a2e25;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px 20px 44px;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", sans-serif;
+      line-height: 1.65;
+    }
+    .date {
+      color: var(--accent);
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    h1 {
+      margin: 8px 0 4px;
+      font-size: 1.75rem;
+      line-height: 1.25;
+    }
+    .lead {
+      color: var(--muted);
+      margin: 0 0 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      margin: 0 0 14px;
+    }
+    h2 {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    ul { margin: 0; padding-left: 1.15rem; }
+    li { margin: 0.35rem 0; }
+    .big {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin: 0;
+    }
+    footer {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="date">{{date}}</div>
+  <h1>おはようございます</h1>
+  <p class="lead">今日も、自分のペースで始めましょう。</p>
+
+  <section class="card">
+    <h2>Today</h2>
+    <p class="big">最初の一歩をひとつだけ。</p>
+    <ul>
+      <li>カーテンを開けて光を浴びる</li>
+      <li>コップ一杯の水を飲む</li>
+      <li>今日いちばん大事なことを確認する</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Note</h2>
+    <p>このページはアプリの「朝のまとめを編集」から自由に書き換えられます。予定、目標、天気のメモなど、自分用の朝の画面にしてください。</p>
+  </section>
+
+  <footer>Morning Alarm</footer>
+</body>
+</html>

@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">モーニングアラーム</string>
+    <string name="alarm_channel_name">アラーム</string>
+    <string name="alarm_channel_description">設定した時刻に鳴るアラーム</string>
+    <string name="alarm_notification_title">アラーム</string>
+    <string name="alarm_notification_text">アラームが鳴っています</string>
+    <string name="alarm_stop">停止</string>
+</resources>
