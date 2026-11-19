@@ -32,10 +32,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.example.morningalarm.MorningAlarmApp
 import com.example.morningalarm.data.SummaryRepository
 import com.example.morningalarm.ui.theme.MorningAlarmTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Editor for the local HTML that is shown after stopping an alarm.
@@ -48,8 +53,13 @@ class SummaryEditorActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        repository = (application as MorningAlarmApp).summaryRepository
+        val app = application as MorningAlarmApp
+        repository = app.summaryRepository
         val initialHtml = repository.read()
+        val sync = app.hermesSummarySync
+        var connected by mutableStateOf(sync.currentConfig() != null)
+        var syncing by mutableStateOf(false)
+        var syncMessage by mutableStateOf("")
 
         setContent {
             MorningAlarmTheme {
@@ -58,10 +68,53 @@ class SummaryEditorActivity : ComponentActivity() {
                     onSave = ::saveHtml,
                     onPreview = {
                         if (saveHtml(it)) {
-                            startActivity(Intent(this, MorningSummaryActivity::class.java))
+                            startActivity(Intent(this, MorningSummaryActivity::class.java)
+                                .putExtra(MorningSummaryActivity.EXTRA_PREVIEW_LOCAL, true))
                         }
                     },
                     onReset = { repository.reset() },
+                    hermes = {
+                        HermesSettings(
+                            connected = connected,
+                            syncing = syncing,
+                            message = syncMessage,
+                            onConnect = { url, token ->
+                                syncing = true
+                                lifecycleScope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        if (!sync.configure(url, token)) null else sync.refresh()
+                                    }
+                                    connected = sync.currentConfig() != null
+                                    syncMessage = when (result) {
+                                        null -> "HTTPS URLとトークンを確認してください。設定できませんでした。"
+                                        true -> "Hermesから取得しました。"
+                                        false -> "設定しましたが取得できませんでした。接続先とトークンを確認してください。"
+                                    }
+                                    syncing = false
+                                }
+                            },
+                            onSync = {
+                                syncing = true
+                                lifecycleScope.launch {
+                                    syncMessage = if (withContext(Dispatchers.IO) { sync.refresh() }) {
+                                        "Hermesから取得しました。"
+                                    } else {
+                                        "取得できませんでした。前回の内容を保持します。"
+                                    }
+                                    syncing = false
+                                }
+                            },
+                            onDisconnect = {
+                                syncing = true
+                                lifecycleScope.launch {
+                                    withContext(Dispatchers.IO) { sync.disconnect() }
+                                    connected = sync.currentConfig() != null
+                                    syncMessage = if (connected) "解除できませんでした。" else "連携を解除しました。"
+                                    syncing = false
+                                }
+                            },
+                        )
+                    },
                 )
             }
         }
@@ -78,6 +131,49 @@ class SummaryEditorActivity : ComponentActivity() {
     }
 }
 
+@Composable
+private fun HermesSettings(
+    connected: Boolean,
+    syncing: Boolean,
+    message: String,
+    onConnect: (String, String) -> Unit,
+    onSync: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    TextButton(onClick = { open = true }, enabled = !syncing) {
+        Text(if (syncing) "Hermesと通信中…" else if (connected) "Hermes連携：設定済み" else "Hermes連携を設定")
+    }
+    if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
+    if (open) {
+        var url by remember { mutableStateOf("") }
+        var token by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("Hermes連携") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("連携中は朝のまとめを開いたときに取得します。オフライン時は前回の内容を表示します。")
+                    OutlinedTextField(url, { url = it }, label = { Text("HTTPS URL") }, singleLine = true)
+                    OutlinedTextField(token, { token = it }, label = { Text("読み取りトークン") },
+                        singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    if (connected) {
+                        TextButton(onClick = { open = false; onSync() }) { Text("今すぐ同期") }
+                        TextButton(onClick = { open = false; onDisconnect() }) { Text("連携を解除") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = url.isNotBlank() && token.isNotBlank(),
+                    onClick = { open = false; onConnect(url.trim(), token.trim()) },
+                ) { Text("設定して同期") }
+            },
+            dismissButton = { TextButton(onClick = { open = false }) { Text("閉じる") } },
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EditorScreen(
@@ -85,6 +181,7 @@ private fun EditorScreen(
     onSave: (String) -> Boolean,
     onPreview: (String) -> Unit,
     onReset: () -> String,
+    hermes: @Composable () -> Unit,
 ) {
     var html by remember(initialHtml) { mutableStateOf(initialHtml) }
     var confirmReset by remember { mutableStateOf(false) }
@@ -146,6 +243,7 @@ private fun EditorScreen(
                     modifier = Modifier.weight(1f),
                 ) { Text("プレビュー") }
             }
+            hermes()
             TextButton(
                 onClick = { confirmReset = true },
                 modifier = Modifier.fillMaxWidth(),
