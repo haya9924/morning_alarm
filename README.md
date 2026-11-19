@@ -19,7 +19,16 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 朝のまとめの拡張
 
-アプリ内エディターでHTMLを編集できます。安全のためJavaScript・ネットワーク通信・ファイルアクセスなどは無効です。Webページ自体から交通情報やカレンダーを取得することはできません。動的データソースやHermesによるHTML更新は今後の開発対象です。ユーザーが入力したHTMLは端末内に保存されます。
+アプリ内エディターでHTMLを編集できます。安全のため、表示用WebViewのJavaScript・ネットワーク通信・ファイルアクセスは無効です。手動編集したHTMLは端末内に保存され、エディター内の「プレビュー」では常に手動版を確認できます。
+
+### Hermesから更新する（ADB不要）
+
+1. Hermesと同じホスト・ユーザーで `python3 tools/hermes_summary.py rotate-token` を初回に1度実行します。生成された `~/.local/state/morning-alarm-summary/token` の値を、チャットやログに貼らず端末へ安全に渡します。
+2. ホストで `python3 tools/hermes_summary.py serve` を継続実行します（Python 3.9以降、待ち受けは `127.0.0.1:3647` のみ）。端末から届く**非公開HTTPS**リバースプロキシ（例: Tailscale Serve）で `/v1/morning-summary` をこのポートへ転送し、`Authorization` ヘッダーを保持してください。Funnel等で公開したり、既存のルートを上書きしたりしないでください。
+3. Androidアプリの「朝のまとめ」編集 →「Hermes連携」で `https://<ホスト>/v1/morning-summary` と読み取りトークンを入力し、「設定して同期」を選びます。
+4. 以後、Hermesはホストで `python3 tools/hermes_summary.py publish /path/to/summary.html` を実行するだけです。UTF-8のHTML（256 KiB以下）が置き換わります。`{{date}}` は端末の表示時刻に展開されます。
+
+端末はまとめ画面を開いたときに自動取得します。取得に失敗した場合は前回取得した内容、まだ一度も取得できていなければ手動版を表示します。「今すぐ同期」でも確認できます。バックグラウンドで定期同期したり、端末へ直接プッシュしたりはしません。「連携を解除」で手動版に戻ります。漏えい時はホストの `revoke-token` で読み取りを停止し、`rotate-token` で再発行して端末に再設定してください。失効してもオフライン表示用の端末キャッシュは自動削除されません。
 
 ## Hermes / ADB連携（実験的）
 
@@ -35,7 +44,7 @@ adb shell am broadcast -n "$COMPONENT" -a "$PREFIX.SET_ENABLED" --el id 1 --ez e
 adb shell am broadcast -n "$COMPONENT" -a "$PREFIX.DELETE_ALARM" --el id 1
 ```
 
-IDは一覧・作成結果を使ってください。現在のコマンドはアラームの一覧、作成、有効・無効、削除のみです。まとめの読み書き、カレンダーや交通情報の取得、Hermes向けの認証付きリモート接続は未実装です。公開HTTPサーバーは起動しません。
+IDは一覧・作成結果を使ってください。このADBインターフェースはアラーム操作専用です。朝のまとめの更新には上記のHTTPS連携を使います。
 
 ## 既知の制約
 

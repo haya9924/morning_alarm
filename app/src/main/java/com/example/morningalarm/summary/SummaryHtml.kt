@@ -3,10 +3,9 @@ package com.example.morningalarm.summary
 /**
  * Prepares user-authored HTML for the summary WebView.
  *
- * The HTML itself is stored locally and is trusted as app data, but it may contain
- * pasted remote resources or scripts. A restrictive CSP is injected as defense in
- * depth on top of WebView settings (JavaScript off, file access off, network off,
- * no INTERNET permission).
+ * The HTML may come from the local editor or the configured Hermes source and can
+ * contain remote resources or scripts. A restrictive CSP is injected in addition
+ * to WebView settings that disable JavaScript, file access, and network loads.
  */
 object SummaryHtml {
     const val DATE_PLACEHOLDER = "{{date}}"

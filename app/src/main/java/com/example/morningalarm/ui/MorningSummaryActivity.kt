@@ -19,14 +19,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.morningalarm.MorningAlarmApp
 import com.example.morningalarm.summary.SummaryHtml
 import com.example.morningalarm.ui.theme.MorningAlarmTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -37,7 +40,7 @@ import java.util.Locale
  *
  * Hardening summary (all applied together):
  * - JavaScript, DOM storage, database, geolocation, file/content access disabled.
- * - Network loads disabled and the app has no INTERNET permission.
+ * - WebView network loads are disabled; only the native Hermes sync client fetches HTML.
  * - All navigations and non-data subresource requests are blocked.
  * - HTML is loaded with a null base URL, never file://.
  * - A restrictive CSP is injected by SummaryHtml.
@@ -46,12 +49,25 @@ class MorningSummaryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as MorningAlarmApp
-        val rawHtml = app.summaryRepository.read()
+        val localHtml = app.summaryRepository.read()
+        val previewLocal = intent.getBooleanExtra(EXTRA_PREVIEW_LOCAL, false)
         val dateText = DATE_FORMAT.format(ZonedDateTime.now())
-        val html = SummaryHtml.render(rawHtml, dateText)
 
         setContent {
             MorningAlarmTheme {
+                val html by produceState(SummaryHtml.render(localHtml, dateText)) {
+                    if (!previewLocal) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                        val sync = app.hermesSummarySync
+                        val fallback = withContext(Dispatchers.IO) { app.summaryRepository.read() }
+                        val cached = withContext(Dispatchers.IO) { sync.cachedHtml() }
+                        value = SummaryHtml.render(cached ?: fallback, dateText)
+                        val latest = withContext(Dispatchers.IO) {
+                            sync.refresh()
+                            sync.cachedHtml()
+                        }
+                        value = SummaryHtml.render(latest ?: fallback, dateText)
+                    }
+                }
                 SummaryScreen(
                     html = html,
                     onEdit = {
@@ -63,8 +79,9 @@ class MorningSummaryActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        val DATE_FORMAT: DateTimeFormatter =
+    companion object {
+        const val EXTRA_PREVIEW_LOCAL = "preview_local_summary"
+        private val DATE_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy年M月d日 (E) HH:mm", Locale.JAPAN)
     }
 }
@@ -101,24 +118,23 @@ private fun SummaryWebView(
     html: String,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val webView = remember { createHardenedWebView(context, html) }
-
-    DisposableEffect(webView) {
-        onDispose {
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.destroy()
-        }
-    }
-
     AndroidView(
-        factory = { webView },
+        factory = ::createHardenedWebView,
         modifier = modifier,
+        update = { view ->
+            if (view.tag != html) {
+                view.tag = html
+                view.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        onRelease = { view ->
+            view.stopLoading()
+            view.destroy()
+        },
     )
 }
 
-private fun createHardenedWebView(context: Context, html: String): WebView {
+private fun createHardenedWebView(context: Context): WebView {
     WebView.setWebContentsDebuggingEnabled(false)
 
     return WebView(context).apply {
@@ -171,6 +187,5 @@ private fun createHardenedWebView(context: Context, html: String): WebView {
             }
         }
 
-        loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 }
