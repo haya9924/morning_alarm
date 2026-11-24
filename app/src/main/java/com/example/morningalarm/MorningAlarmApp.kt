@@ -10,7 +10,14 @@ import com.example.morningalarm.summary.HermesSummarySync
 
 class MorningAlarmApp : Application() {
     val repository: AlarmRepository by lazy {
-        AlarmRepository(SharedPreferencesAlarmStorage(this))
+        AlarmRepository(SharedPreferencesAlarmStorage(this), onPersisted = {
+            com.example.morningalarm.widget.TodayAlarmsWidget.requestUpdate(this)
+        })
+    }
+
+    val traceSettings by lazy {
+        com.example.morningalarm.data.TraceSettingsRepository(
+            com.example.morningalarm.data.SharedPreferencesTraceSettingsStorage(this))
     }
 
     val scheduler: AlarmScheduler by lazy { AlarmScheduler(this) }

@@ -12,6 +12,9 @@ import com.example.morningalarm.MorningAlarmApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.example.morningalarm.trace.Point
+import com.example.morningalarm.trace.TraceValidator
+import java.util.UUID
 
 /**
  * Owns alarm playback independently of any Activity.
@@ -28,6 +31,7 @@ class AlarmService : Service() {
     private val repository by lazy { (application as MorningAlarmApp).repository }
     private var player: AlarmPlayer? = null
     private var currentAlarmId: Long? = null
+    private var sessionToken: String = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -60,11 +64,55 @@ class AlarmService : Service() {
                 }
             }
 
-            ACTION_STOP -> {
-                val requestedId = intent.getLongExtra(EXTRA_ALARM_ID, -1L).takeIf { it > 0L }
-                // A stale notification must not stop a newer alarm's service.
-                if (stopRinging(requestedId)) {
-                    stopSelf(startId)
+            ACTION_STOP -> Unit // Legacy notification commands cannot bypass tracing.
+
+            ACTION_SNOOZE -> {
+                if (matchesSession(intent) && currentAlarmId != null) {
+                    val pending = SnoozeScheduler.Pending(currentAlarmId!!, sessionToken,
+                        System.currentTimeMillis() + SnoozeScheduler.DURATION_MS)
+                    runCatching {
+                        SnoozeScheduler.saveAndSchedule(this, pending)
+                        _snoozedUntil.value = pending.dueAt
+                        val snoozedAlarm = repository.get(currentAlarmId!!)
+                        stopRinging(currentAlarmId)
+                        snoozedAlarm?.let { AlarmNotifier.showSnoozed(this, it) }
+                        stopSelf(startId)
+                    }.onFailure {
+                        Log.e(TAG, "Snooze failed", it)
+                        android.widget.Toast.makeText(this, it.message ?: "スヌーズできませんでした", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+
+            ACTION_RESUME -> {
+                val pending = SnoozeScheduler.read(this)
+                if (pending != null && intent.getStringExtra(EXTRA_TOKEN) == pending.token &&
+                    System.currentTimeMillis() >= pending.dueAt) {
+                    if (startRinging(pending.alarmId)) {
+                        SnoozeScheduler.clear(this)
+                        _snoozedUntil.value = null
+                    } else if (currentAlarmId == null) stopSelf(startId)
+                } else if (currentAlarmId == null) stopSelf(startId)
+            }
+
+            ACTION_TRACE_DISMISS -> {
+                val coordinates = intent.getFloatArrayExtra(EXTRA_POINTS)
+                val pending = SnoozeScheduler.read(this)
+                val pendingMatches = currentAlarmId == null && pending != null &&
+                    pending.alarmId == intent.getLongExtra(EXTRA_ALARM_ID, -1L) &&
+                    pending.token == intent.getStringExtra(EXTRA_TOKEN)
+                if ((matchesSession(intent) || pendingMatches) && coordinates != null && coordinates.size % 2 == 0 &&
+                    coordinates.size <= TraceValidator.MAX_INPUT_POINTS * 2) {
+                    val points = coordinates.toList().chunked(2).map { Point(it[0], it[1]) }
+                    if (TraceValidator.validate(points, (application as MorningAlarmApp).traceSettings.difficulty.value).success) {
+                        val id = currentAlarmId ?: pending?.alarmId
+                        val dismissedSession = if (pendingMatches) pending!!.token else sessionToken
+                        SnoozeScheduler.clear(this)
+                        _snoozedUntil.value = null
+                        _dismissedToken.value = dismissedSession
+                        stopRinging(id)
+                        stopSelf(startId)
+                    }
                 }
             }
 
@@ -77,7 +125,7 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
-        stopRinging(null)
+        if (currentAlarmId != null) stopRinging(null)
         super.onDestroy()
     }
 
@@ -104,7 +152,11 @@ class AlarmService : Service() {
             stopRinging(currentAlarmId)
         }
 
+        SnoozeScheduler.clear(this)
+        _snoozedUntil.value = null
         currentAlarmId = alarmId
+        sessionToken = UUID.randomUUID().toString()
+        _activeToken.value = sessionToken
         _ringingAlarmId.value = alarmId
 
         val notification = AlarmNotifier.buildRingingNotification(this, alarm)
@@ -160,8 +212,38 @@ class AlarmService : Service() {
         return true
     }
 
+    private fun matchesSession(intent: Intent): Boolean =
+        currentAlarmId != null && currentAlarmId == intent.getLongExtra(EXTRA_ALARM_ID, -1L) &&
+            sessionToken.isNotEmpty() && sessionToken == intent.getStringExtra(EXTRA_TOKEN)
+
     companion object {
         private const val TAG = "AlarmService"
+
+        const val ACTION_SNOOZE = "com.example.morningalarm.action.SNOOZE"
+        const val ACTION_RESUME = "com.example.morningalarm.action.RESUME_SNOOZE"
+        const val ACTION_TRACE_DISMISS = "com.example.morningalarm.action.TRACE_DISMISS"
+        const val EXTRA_TOKEN = "session_token"
+        const val EXTRA_POINTS = "trace_points"
+        private val _activeToken = MutableStateFlow("")
+        val activeToken: StateFlow<String> = _activeToken.asStateFlow()
+        private val _dismissedToken = MutableStateFlow("")
+        val dismissedToken: StateFlow<String> = _dismissedToken.asStateFlow()
+        private val _snoozedUntil = MutableStateFlow<Long?>(null)
+        val snoozedUntil: StateFlow<Long?> = _snoozedUntil.asStateFlow()
+
+        fun snooze(context: Context, id: Long, token: String) {
+            context.startService(Intent(context, AlarmService::class.java).setAction(ACTION_SNOOZE)
+                .putExtra(EXTRA_ALARM_ID, id).putExtra(EXTRA_TOKEN, token))
+        }
+        fun dismissWithTrace(context: Context, id: Long, token: String, points: List<Point>) {
+            context.startService(Intent(context, AlarmService::class.java).setAction(ACTION_TRACE_DISMISS)
+                .putExtra(EXTRA_ALARM_ID, id).putExtra(EXTRA_TOKEN, token)
+                .putExtra(EXTRA_POINTS, points.flatMap { listOf(it.x, it.y) }.toFloatArray()))
+        }
+        fun resume(context: Context, pending: SnoozeScheduler.Pending) {
+            ContextCompat.startForegroundService(context, Intent(context, AlarmService::class.java)
+                .setAction(ACTION_RESUME).putExtra(EXTRA_TOKEN, pending.token))
+        }
 
         const val ACTION_START = "com.example.morningalarm.action.START_RINGING"
         const val ACTION_STOP = "com.example.morningalarm.action.STOP_RINGING"

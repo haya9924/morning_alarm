@@ -22,6 +22,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,10 +45,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.morningalarm.data.Alarm
-import java.util.Locale
+import com.example.morningalarm.data.RepeatDays
+import java.time.DayOfWeek
+import java.time.LocalTime
+import java.time.ZonedDateTime
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,9 +61,17 @@ fun MainScreen(
     exactAlarmAllowed: Boolean,
     notificationsAllowed: Boolean,
     fullScreenIntentAllowed: Boolean,
-    onAddAlarm: (hour: Int, minute: Int, label: String) -> Unit,
+    now: ZonedDateTime,
+    traceDifficulty: com.example.morningalarm.trace.TraceDifficulty,
+    onTraceDifficultyChange: (com.example.morningalarm.trace.TraceDifficulty) -> Unit,
+    onPreviewAlarm: () -> Unit,
+    onAddAlarm: (hour: Int, minute: Int, label: String, days: Set<DayOfWeek>) -> Unit,
+    onEditAlarm: (Alarm, hour: Int, minute: Int, label: String, days: Set<DayOfWeek>) -> Unit,
     onToggleAlarm: (Alarm, Boolean) -> Unit,
     onDeleteAlarm: (Alarm) -> Unit,
+    onSkipNext: (Alarm) -> Unit,
+    onSetNextTime: (Alarm, LocalTime?) -> Unit,
+    onClearNextAdjustment: (Alarm) -> Unit,
     onEditSummary: () -> Unit,
     onPreviewSummary: () -> Unit,
     onRequestExactAlarm: () -> Unit,
@@ -66,6 +80,8 @@ fun MainScreen(
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Alarm?>(null) }
+    var editing by remember { mutableStateOf<Alarm?>(null) }
+    var changingNextTime by remember { mutableStateOf<Alarm?>(null) }
 
     Scaffold(
         topBar = {
@@ -89,6 +105,7 @@ fun MainScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item { TraceSettingsCard(traceDifficulty, onTraceDifficultyChange, onPreviewAlarm) }
             if (!notificationsAllowed) {
                 item {
                     PermissionCard(
@@ -126,7 +143,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "毎日のアラーム",
+                        text = "アラーム",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f),
@@ -147,7 +164,7 @@ fun MainScreen(
                             Text("アラームはまだありません", fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "右下の + から、毎日鳴るアラームを追加できます。",
+                                "右下の + から、時刻と曜日を指定してアラームを追加できます。",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
@@ -158,7 +175,12 @@ fun MainScreen(
             items(items = alarms, key = { it.id }) { alarm ->
                 AlarmRow(
                     alarm = alarm,
+                    now = now,
                     onToggle = { enabled -> onToggleAlarm(alarm, enabled) },
+                    onEdit = { editing = alarm },
+                    onSkipNext = { onSkipNext(alarm) },
+                    onChangeNextTime = { changingNextTime = alarm },
+                    onClearAdjustment = { onClearNextAdjustment(alarm) },
                     onDelete = { pendingDelete = alarm },
                 )
             }
@@ -168,11 +190,34 @@ fun MainScreen(
     }
 
     if (showAddDialog) {
-        AddAlarmDialog(
+        AlarmEditDialog(
+            alarm = null,
             onDismiss = { showAddDialog = false },
-            onConfirm = { hour, minute, label ->
-                onAddAlarm(hour, minute, label)
+            onConfirm = { hour, minute, label, days ->
+                onAddAlarm(hour, minute, label, days)
                 showAddDialog = false
+            },
+        )
+    }
+
+    editing?.let { alarm ->
+        AlarmEditDialog(
+            alarm = alarm,
+            onDismiss = { editing = null },
+            onConfirm = { hour, minute, label, days ->
+                onEditAlarm(alarm, hour, minute, label, days)
+                editing = null
+            },
+        )
+    }
+
+    changingNextTime?.let { alarm ->
+        NextTimeDialog(
+            alarm = alarm,
+            onDismiss = { changingNextTime = null },
+            onConfirm = { time ->
+                onSetNextTime(alarm, time)
+                changingNextTime = null
             },
         )
     }
@@ -181,7 +226,7 @@ fun MainScreen(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("アラームを削除") },
-            text = { Text("${formatTime(alarm.hour, alarm.minute)} のアラームを削除しますか？") },
+            text = { Text("${AlarmText.formatTime(alarm.hour, alarm.minute)} のアラームを削除しますか？") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -200,48 +245,84 @@ fun MainScreen(
 @Composable
 private fun AlarmRow(
     alarm: Alarm,
+    now: ZonedDateTime,
     onToggle: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onSkipNext: () -> Unit,
+    onChangeNextTime: () -> Unit,
+    onClearAdjustment: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 18.dp, top = 14.dp, end = 8.dp, bottom = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = formatTime(alarm.hour, alarm.minute),
-                    fontSize = 34.sp,
-                    fontWeight = FontWeight.Light,
-                    fontFamily = FontFamily.Monospace,
-                    color = if (alarm.enabled) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-                if (alarm.label.isNotBlank()) {
+        Column(modifier = Modifier.padding(start = 18.dp, top = 14.dp, end = 8.dp, bottom = 8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = alarm.label,
-                        style = MaterialTheme.typography.bodyLarge,
+                        text = AlarmText.formatTime(alarm.hour, alarm.minute),
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Light,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (alarm.enabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    if (alarm.label.isNotBlank()) {
+                        Text(
+                            text = alarm.label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text = AlarmText.repeatSummary(alarm.repeat),
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        text = if (alarm.enabled) {
+                            AlarmText.nextOccurrenceText(alarm, now) ?: "次回の予定はありません"
+                        } else {
+                            "停止中"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    AlarmText.nextAdjustmentText(alarm)?.let { adjustment ->
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = adjustment,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
-                Text(
-                    text = if (alarm.enabled) "毎日・有効" else "停止中",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Switch(checked = alarm.enabled, onCheckedChange = onToggle)
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "削除",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            Switch(checked = alarm.enabled, onCheckedChange = onToggle)
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "削除",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onEdit) { Text("編集") }
+                TextButton(onClick = onSkipNext) { Text("次回スキップ") }
+                TextButton(onClick = onChangeNextTime) { Text("次回時刻") }
+                if (alarm.hasNextAdjustment) {
+                    TextButton(onClick = onClearAdjustment) { Text("解除") }
+                }
             }
         }
     }
@@ -278,24 +359,63 @@ private fun PermissionCard(
     }
 }
 
+/**
+ * Add/edit dialog. [alarm] is null when adding a new alarm. Repeat days default to
+ * every day, and an emptied selection is persisted as "every day" so an alarm can
+ * never end up scheduled never.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddAlarmDialog(
+private fun AlarmEditDialog(
+    alarm: Alarm?,
     onDismiss: () -> Unit,
-    onConfirm: (hour: Int, minute: Int, label: String) -> Unit,
+    onConfirm: (hour: Int, minute: Int, label: String, days: Set<DayOfWeek>) -> Unit,
 ) {
-    val timeState = rememberTimePickerState(initialHour = 7, initialMinute = 0, is24Hour = true)
-    var label by remember { mutableStateOf("") }
+    val timeState = rememberTimePickerState(
+        initialHour = alarm?.hour ?: 7,
+        initialMinute = alarm?.minute ?: 0,
+        is24Hour = true,
+    )
+    var label by remember { mutableStateOf(alarm?.label.orEmpty()) }
+    var days by remember { mutableStateOf(RepeatDays.normalize(alarm?.repeatDays ?: RepeatDays.EVERY_DAY)) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("アラームを追加") },
+        title = { Text(if (alarm == null) "アラームを追加" else "アラームを編集") },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 TimePicker(state = timeState)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = when {
+                        days.containsAll(RepeatDays.EVERY_DAY) -> "繰り返し: 毎日"
+                        days.isEmpty() -> "繰り返し: 毎日（曜日を選ぶと絞り込めます）"
+                        else -> "繰り返し: ${AlarmText.repeatSummary(days)}"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                DayOfWeekSelector(
+                    selected = days,
+                    // Toggling the last selected day restores "every day"; it never
+                    // collapses to an empty (= same as every day) selection, which
+                    // made individual days impossible to re-select.
+                    onToggle = { day -> days = AlarmText.toggledDays(days, day) },
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilledTonalButton(onClick = { days = RepeatDays.EVERY_DAY }) { Text("毎日") }
+                    FilledTonalButton(onClick = { days = RepeatDays.WEEKDAYS }) { Text("平日") }
+                    FilledTonalButton(onClick = { days = RepeatDays.WEEKEND }) { Text("土日") }
+                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = label,
@@ -309,8 +429,17 @@ private fun AddAlarmDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onConfirm(timeState.hour, timeState.minute, label) }) {
-                Text("追加")
+            Button(
+                onClick = {
+                    onConfirm(
+                        timeState.hour,
+                        timeState.minute,
+                        label,
+                        RepeatDays.normalize(days),
+                    )
+                },
+            ) {
+                Text(if (alarm == null) "追加" else "保存")
             }
         },
         dismissButton = {
@@ -319,5 +448,89 @@ private fun AddAlarmDialog(
     )
 }
 
-private fun formatTime(hour: Int, minute: Int): String =
-    String.format(Locale.JAPAN, "%02d:%02d", hour, minute)
+/** Seven chips in repeat order (Mon..Sun). */
+@Composable
+private fun DayOfWeekSelector(
+    selected: Set<DayOfWeek>,
+    onToggle: (DayOfWeek) -> Unit,
+) {
+    val normalized = RepeatDays.normalize(selected)
+    RepeatDays.ORDERED.chunked(4).forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            row.forEach { day ->
+                FilterChip(
+                    selected = day in normalized,
+                    onClick = { onToggle(day) },
+                    label = { Text(AlarmText.dayLabel(day)) },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** One-shot "change next time only" dialog. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NextTimeDialog(
+    alarm: Alarm,
+    onDismiss: () -> Unit,
+    onConfirm: (LocalTime?) -> Unit,
+) {
+    val initial = alarm.nextTimeOverrideAt?.toLocalTime()
+        ?: LocalTime.of(alarm.hour, alarm.minute)
+    val timeState = rememberTimePickerState(
+        initialHour = initial.hour,
+        initialMinute = initial.minute,
+        is24Hour = true,
+    )
+    var clear by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("次回のみ時刻を変更") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                val target = AlarmText.nextOccurrenceText(alarm, ZonedDateTime.now())
+                Text(
+                    buildString {
+                        append("次に鳴る1回だけ時刻を変更します。")
+                        if (target != null) append("対象: $target。")
+                        append("以降は通常の ${AlarmText.formatTime(alarm.hour, alarm.minute)} に戻ります。")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                TimePicker(state = timeState)
+                if (alarm.nextTimeOverrideAt != null) {
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { clear = true }) { Text("次回時刻の変更を解除") }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (clear) {
+                        onConfirm(null)
+                    } else {
+                        onConfirm(LocalTime.of(timeState.hour, timeState.minute))
+                    }
+                },
+            ) {
+                Text(if (clear) "解除" else "設定")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("キャンセル") }
+        },
+    )
+}

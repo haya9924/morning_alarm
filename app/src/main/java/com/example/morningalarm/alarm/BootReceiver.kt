@@ -16,6 +16,8 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext as MorningAlarmApp
         val alarms = app.repository.alarms.value
         app.scheduler.scheduleAll(alarms)
+        runCatching { SnoozeScheduler.restore(context) }
+            .onFailure { Log.e(TAG, "Could not restore snooze", it) }
         Log.i(
             TAG,
             "Rescheduled ${alarms.count { it.enabled }} alarm(s) after ${intent.action}",
