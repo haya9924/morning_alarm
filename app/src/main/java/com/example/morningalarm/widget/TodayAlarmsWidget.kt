@@ -13,6 +13,7 @@ import android.view.View
 import android.widget.RemoteViews
 import com.example.morningalarm.MorningAlarmApp
 import com.example.morningalarm.R
+import com.example.morningalarm.alarm.AlarmScheduler
 import com.example.morningalarm.alarm.SnoozeScheduler
 import com.example.morningalarm.data.NextAlarmTime
 import java.time.Instant
@@ -61,8 +62,7 @@ class TodayAlarmsWidget : AppWidgetProvider() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        @Suppress("DEPRECATION")
-        fun updateAll(context: Context) {
+        private fun updateAll(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(ComponentName(context, TodayAlarmsWidget::class.java))
             val timer = context.getSystemService(AlarmManager::class.java)
@@ -102,8 +102,14 @@ class TodayAlarmsWidget : AppWidgetProvider() {
 
         private fun resolveNext(context: Context, now: ZonedDateTime): Instant? {
             val app = context.applicationContext as MorningAlarmApp
-            val snooze = SnoozeScheduler.read(context)?.let {
-                NextAlarmTime.Snooze(it.alarmId, Instant.ofEpochMilli(it.dueAt))
+            // Snooze has no inexact fallback. A persisted record cannot ring if
+            // exact alarm access was revoked or could not be used at restore.
+            val snooze = if (AlarmScheduler.isExactAlarmAllowed(context)) {
+                SnoozeScheduler.read(context)?.let {
+                    NextAlarmTime.Snooze(it.alarmId, Instant.ofEpochMilli(it.dueAt))
+                }
+            } else {
+                null
             }
             return NextAlarmTime.resolve(app.repository.alarms.value, snooze, now)
         }
