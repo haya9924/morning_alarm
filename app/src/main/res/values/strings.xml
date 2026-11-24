@@ -5,4 +5,8 @@
     <string name="alarm_notification_title">アラーム</string>
     <string name="alarm_notification_text">アラームが鳴っています</string>
     <string name="alarm_stop">停止</string>
+    <string name="widget_next_alarm_title">次のアラーム予定</string>
+    <string name="widget_no_alarm">予定はありません</string>
+    <string name="widget_alarm_today">今日</string>
+    <string name="widget_alarm_tomorrow">明日</string>
 </resources>

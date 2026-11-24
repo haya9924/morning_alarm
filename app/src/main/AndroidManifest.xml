@@ -60,20 +60,19 @@
             android:name=".ui.SummaryEditorActivity"
             android:exported="false" />
 
-        <receiver android:name=".widget.TodayAlarmsWidget"
-            android:label="今日のアラーム予定" android:exported="false">
+        <receiver
+            android:name=".widget.TodayAlarmsWidget"
+            android:exported="false"
+            android:label="@string/widget_next_alarm_title">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="android.intent.action.DATE_CHANGED" />
-                <action android:name="android.intent.action.TIME_SET" />
-                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
             </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/today_alarms_widget_info" />
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/today_alarms_widget_info" />
         </receiver>
-        <service android:name=".widget.TodayAlarmsViewsService"
-            android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
 
         <receiver android:name=".alarm.SnoozeReceiver" android:exported="false" />
 

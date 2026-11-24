@@ -7,93 +7,124 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import android.text.format.DateFormat
+import android.text.format.DateUtils
+import android.view.View
 import android.widget.RemoteViews
-import android.widget.RemoteViewsService
 import com.example.morningalarm.MorningAlarmApp
 import com.example.morningalarm.R
 import com.example.morningalarm.alarm.SnoozeScheduler
-import com.example.morningalarm.data.TodayAlarmTimes
+import com.example.morningalarm.data.NextAlarmTime
+import java.time.Instant
+import java.time.ZoneId
 import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
+import java.util.Date
 
-/** Read-only widget. No alarm labels, tokens, or alarm control actions reach the host. */
+/**
+ * Read-only "next alarm" widget. Shows a single time and its day; no labels, tokens,
+ * or control actions reach the host. The remote views are static (no adapter or
+ * scrolling), built once per snapshot and reused for every widget id.
+ */
 class TodayAlarmsWidget : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = updateAll(context)
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) =
+        updateAll(context)
+
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        if (intent.action in setOf(REFRESH, Intent.ACTION_DATE_CHANGED, Intent.ACTION_TIME_CHANGED,
-                Intent.ACTION_TIMEZONE_CHANGED, Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED)) {
+        // APPWIDGET_UPDATE is dispatched to onUpdate by super; the rest need a refresh.
+        if (intent.action in setOf(REFRESH, Intent.ACTION_DATE_CHANGED, Intent.ACTION_LOCALE_CHANGED)) {
             updateAll(context)
         }
     }
-    override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, options: android.os.Bundle) {
-        updateAll(context)
-    }
+
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        manager: AppWidgetManager,
+        id: Int,
+        options: android.os.Bundle,
+    ) = updateAll(context)
+
     override fun onDisabled(context: Context) {
         context.getSystemService(AlarmManager::class.java).cancel(refreshIntent(context))
     }
 
     companion object {
         const val REFRESH = "com.example.morningalarm.widget.REFRESH"
+
         fun requestUpdate(context: Context) {
             context.sendBroadcast(Intent(context, TodayAlarmsWidget::class.java).setAction(REFRESH))
         }
-        private fun refreshIntent(context: Context) = PendingIntent.getBroadcast(context, 0,
+
+        private fun refreshIntent(context: Context) = PendingIntent.getBroadcast(
+            context, 0,
             Intent(context, TodayAlarmsWidget::class.java).setAction(REFRESH),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
         @Suppress("DEPRECATION")
         fun updateAll(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(ComponentName(context, TodayAlarmsWidget::class.java))
             val timer = context.getSystemService(AlarmManager::class.java)
-            if (ids.isEmpty()) { timer.cancel(refreshIntent(context)); return }
-            for (id in ids) {
-                val views = RemoteViews(context.packageName, R.layout.widget_today_alarms)
-                val adapter = Intent(context, TodayAlarmsViewsService::class.java)
-                    .setData(Uri.parse("morningalarm://widget/$id"))
-                views.setRemoteAdapter(R.id.widget_alarm_list, adapter)
-                views.setEmptyView(R.id.widget_alarm_list, R.id.widget_alarm_empty)
-                manager.updateAppWidget(id, views)
+            if (ids.isEmpty()) {
+                timer.cancel(refreshIntent(context))
+                return
             }
-            manager.notifyAppWidgetViewDataChanged(ids, R.id.widget_alarm_list)
-            val now = ZonedDateTime.now()
-            val next = WidgetData.times(context, now).firstOrNull()
-                ?: now.toLocalDate().plusDays(1).atStartOfDay(now.zone).toInstant()
-            // Display refresh only: non-wakeup, inexact, and no exact-alarm permission.
-            timer.set(AlarmManager.RTC, next.toEpochMilli() + 1_000, refreshIntent(context))
-        }
-    }
-}
 
-private object WidgetData {
-    fun times(context: Context, now: ZonedDateTime): List<java.time.Instant> {
-        val app = context.applicationContext as MorningAlarmApp
-        val snooze = SnoozeScheduler.read(context)?.let {
-            TodayAlarmTimes.Snooze(it.alarmId, java.time.Instant.ofEpochMilli(it.dueAt))
-        }
-        return TodayAlarmTimes.resolve(app.repository.alarms.value, snooze, now)
-    }
-}
+            // One snapshot: one clock read, one repository read, one resolve for all ids.
+            val now = ZonedDateTime.now(ZoneId.systemDefault())
+            val next = resolveNext(context, now)
 
-class TodayAlarmsViewsService : RemoteViewsService() {
-    override fun onGetViewFactory(intent: Intent): RemoteViewsFactory = object : RemoteViewsFactory {
-        private var times: List<String> = emptyList()
-        override fun onCreate() = Unit
-        override fun onDataSetChanged() {
-            val now = ZonedDateTime.now()
-            val format = DateTimeFormatter.ofPattern("HH:mm")
-            times = WidgetData.times(applicationContext, now).map { it.atZone(now.zone).format(format) }
+            val views = RemoteViews(context.packageName, R.layout.widget_today_alarms)
+            if (next == null) {
+                views.setViewVisibility(R.id.widget_alarm_time, View.GONE)
+                views.setViewVisibility(R.id.widget_alarm_day, View.GONE)
+                views.setViewVisibility(R.id.widget_alarm_empty, View.VISIBLE)
+                views.setTextViewText(R.id.widget_alarm_empty, context.getString(R.string.widget_no_alarm))
+            } else {
+                views.setTextViewText(R.id.widget_alarm_time, formatTime(context, next))
+                views.setTextViewText(R.id.widget_alarm_day, formatDay(context, next, now))
+                views.setViewVisibility(R.id.widget_alarm_time, View.VISIBLE)
+                views.setViewVisibility(R.id.widget_alarm_day, View.VISIBLE)
+                views.setViewVisibility(R.id.widget_alarm_empty, View.GONE)
+            }
+            ids.forEach { manager.updateAppWidget(it, views) }
+
+            // Display refresh only: non-wakeup, inexact RTC, no exact-alarm permission.
+            if (next == null) {
+                timer.cancel(refreshIntent(context))
+            } else {
+                val midnight = now.toLocalDate().plusDays(1).atStartOfDay(now.zone).toInstant()
+                val at = minOf(next, midnight).toEpochMilli() + 1_000L
+                timer.set(AlarmManager.RTC, at, refreshIntent(context))
+            }
         }
-        override fun onDestroy() { times = emptyList() }
-        override fun getCount() = times.size
-        override fun getViewAt(position: Int): RemoteViews = RemoteViews(packageName, R.layout.widget_alarm_time_row).apply {
-            setTextViewText(R.id.widget_alarm_time, times.getOrNull(position) ?: "—")
+
+        private fun resolveNext(context: Context, now: ZonedDateTime): Instant? {
+            val app = context.applicationContext as MorningAlarmApp
+            val snooze = SnoozeScheduler.read(context)?.let {
+                NextAlarmTime.Snooze(it.alarmId, Instant.ofEpochMilli(it.dueAt))
+            }
+            return NextAlarmTime.resolve(app.repository.alarms.value, snooze, now)
         }
-        override fun getLoadingView(): RemoteViews? = null
-        override fun getViewTypeCount() = 1
-        override fun getItemId(position: Int) = position.toLong()
-        override fun hasStableIds() = false
+
+        private fun formatTime(context: Context, next: Instant): String =
+            DateFormat.getTimeFormat(context).format(Date.from(next))
+
+        /** Today/tomorrow labels, otherwise an abbreviated weekday + date in the system zone. */
+        private fun formatDay(context: Context, next: Instant, now: ZonedDateTime): String {
+            val day = next.atZone(now.zone).toLocalDate()
+            return when (day) {
+                now.toLocalDate() -> context.getString(R.string.widget_alarm_today)
+                now.toLocalDate().plusDays(1) -> context.getString(R.string.widget_alarm_tomorrow)
+                else -> DateUtils.formatDateTime(
+                    context,
+                    next.toEpochMilli(),
+                    DateUtils.FORMAT_SHOW_DATE or
+                        DateUtils.FORMAT_SHOW_WEEKDAY or
+                        DateUtils.FORMAT_ABBREV_WEEKDAY,
+                )
+            }
+        }
     }
 }

@@ -3,6 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#141D30"
+    android:gravity="center_vertical"
     android:orientation="vertical"
     android:padding="12dp">
 
@@ -12,30 +13,40 @@
         android:layout_height="wrap_content"
         android:ellipsize="end"
         android:singleLine="true"
-        android:text="今日これからのアラーム"
+        android:text="@string/widget_next_alarm_title"
         android:textColor="#FFFFFF"
-        android:textSize="14sp"
+        android:textSize="12sp"
         android:textStyle="bold" />
 
-    <ListView
-        android:id="@+id/widget_alarm_list"
+    <TextView
+        android:id="@+id/widget_alarm_time"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="8dp"
-        android:layout_weight="1"
-        android:divider="@null"
-        android:dividerHeight="0dp"
-        android:scrollbars="none" />
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_alarm_day"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#C7D2E4"
+        android:textSize="13sp" />
 
     <TextView
         android:id="@+id/widget_alarm_empty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center"
-        android:padding="8dp"
-        android:text="予定はありません"
-        android:textColor="#FFFFFF"
-        android:textSize="14sp" />
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:text="@string/widget_no_alarm"
+        android:textColor="#C7D2E4"
+        android:textSize="14sp"
+        android:visibility="gone" />
 
 </LinearLayout>
