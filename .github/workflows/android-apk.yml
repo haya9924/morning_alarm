@@ -22,8 +22,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Install Android SDK components
-        run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
       - name: Run unit tests and assemble debug APK
         run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 --no-parallel --console=plain
       - name: Verify and package APK
