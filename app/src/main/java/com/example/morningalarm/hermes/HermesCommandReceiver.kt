@@ -8,8 +8,10 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import com.example.morningalarm.MorningAlarmApp
+import com.example.morningalarm.data.Alarm
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import java.time.ZonedDateTime
 
 /**
  * Explicit automation entry point for Hermes.
@@ -53,17 +55,29 @@ class HermesCommandReceiver : BroadcastReceiver() {
                 HermesProtocol.Action.LIST_ALARMS -> respond(
                     ok = true,
                     message = "alarms",
-                    data = app.repository.alarms.value.map(HermesProtocol::alarmToMap),
+                    data = app.repository.alarms.value.map {
+                        HermesProtocol.alarmWithScheduleToMap(it, ZonedDateTime.now())
+                    },
                 )
 
                 HermesProtocol.Action.CREATE_ALARM -> {
                     val hour = intent.optionalInt(HermesProtocol.Extra.HOUR)
                     val minute = intent.optionalInt(HermesProtocol.Extra.MINUTE)
                     val label = intent.getStringExtra(HermesProtocol.Extra.LABEL)
-                    val request = HermesProtocol.Args.create(hour, minute, label)
+                    val request = HermesProtocol.Args.create(
+                        hour = hour,
+                        minute = minute,
+                        label = label,
+                        days = intent.getStringExtra(HermesProtocol.Extra.DAYS),
+                    )
                         .getOrElse { return respond(ok = false, message = it.message ?: "invalid request") }
 
-                    val alarm = app.repository.add(request.hour, request.minute, request.label)
+                    val alarm = app.repository.add(
+                        hour = request.hour,
+                        minute = request.minute,
+                        label = request.label,
+                        repeatDays = request.repeatDays,
+                    )
                     app.scheduler.schedule(alarm)
                     respond(
                         ok = true,
@@ -106,6 +120,52 @@ class HermesCommandReceiver : BroadcastReceiver() {
                     respond(ok = true, message = "deleted", data = linkedMapOf("id" to id))
                 }
 
+                HermesProtocol.Action.SET_REPEAT_DAYS -> {
+                    val id = HermesProtocol.Args.alarmId(intent.optionalLong(HermesProtocol.Extra.ID))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid id") }
+                    val days = HermesProtocol.Args
+                        .repeatDays(intent.getStringExtra(HermesProtocol.Extra.DAYS))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid days") }
+                    val updated = app.repository.setRepeatDays(id, days)
+                        ?: return respond(ok = false, message = "alarm not found: $id")
+                    reschedule(app, updated)
+                    respond(ok = true, message = "updated", data = HermesProtocol.alarmToMap(updated))
+                }
+
+                HermesProtocol.Action.SKIP_NEXT -> {
+                    val id = HermesProtocol.Args.alarmId(intent.optionalLong(HermesProtocol.Extra.ID))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid id") }
+                    val updated = app.repository.skipNext(id)
+                        ?: return respond(ok = false, message = "alarm not found: $id")
+                    reschedule(app, updated)
+                    respond(ok = true, message = "skipped", data = HermesProtocol.alarmToMap(updated))
+                }
+
+                HermesProtocol.Action.SET_NEXT_TIME -> {
+                    val id = HermesProtocol.Args.alarmId(intent.optionalLong(HermesProtocol.Extra.ID))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid id") }
+                    val time = HermesProtocol.Args
+                        .nextTimeOverride(intent.getStringExtra(HermesProtocol.Extra.NEXT_TIME))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid nextTime") }
+                    val updated = app.repository.setNextTimeOverride(
+                        id = id,
+                        time = time?.toLocalTime(),
+                        date = time?.toLocalDate(),
+                    )
+                        ?: return respond(ok = false, message = "alarm not found: $id")
+                    reschedule(app, updated)
+                    respond(ok = true, message = "updated", data = HermesProtocol.alarmToMap(updated))
+                }
+
+                HermesProtocol.Action.CLEAR_NEXT_ADJUSTMENT -> {
+                    val id = HermesProtocol.Args.alarmId(intent.optionalLong(HermesProtocol.Extra.ID))
+                        .getOrElse { return respond(ok = false, message = it.message ?: "invalid id") }
+                    val updated = app.repository.clearNextAdjustment(id)
+                        ?: return respond(ok = false, message = "alarm not found: $id")
+                    reschedule(app, updated)
+                    respond(ok = true, message = "cleared", data = HermesProtocol.alarmToMap(updated))
+                }
+
                 else -> respond(
                     ok = false,
                     message = "unknown or missing action; supported: ${SUPPORTED_ACTIONS.joinToString()}",
@@ -125,6 +185,15 @@ class HermesCommandReceiver : BroadcastReceiver() {
         Log.i(TAG, json)
     }
 
+    /** Re-registers (or cancels) the AlarmManager entry after a mutation. */
+    private fun reschedule(app: MorningAlarmApp, alarm: Alarm) {
+        if (alarm.enabled) {
+            app.scheduler.schedule(alarm)
+        } else {
+            app.scheduler.cancel(alarm.id)
+        }
+    }
+
     private fun Intent.optionalInt(name: String): Int? = extras?.get(name) as? Int
 
     private fun Intent.optionalLong(name: String): Long? = extras?.get(name) as? Long
@@ -138,6 +207,10 @@ class HermesCommandReceiver : BroadcastReceiver() {
             HermesProtocol.Action.CREATE_ALARM,
             HermesProtocol.Action.SET_ENABLED,
             HermesProtocol.Action.DELETE_ALARM,
+            HermesProtocol.Action.SET_REPEAT_DAYS,
+            HermesProtocol.Action.SKIP_NEXT,
+            HermesProtocol.Action.SET_NEXT_TIME,
+            HermesProtocol.Action.CLEAR_NEXT_ADJUSTMENT,
         )
     }
 }

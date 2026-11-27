@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.example.morningalarm.MorningAlarmApp
+import com.example.morningalarm.widget.TodayAlarmsWidget
 
 /**
  * Re-registers exact alarms after reboot, app update, manual clock/timezone change,
@@ -16,6 +17,9 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext as MorningAlarmApp
         val alarms = app.repository.alarms.value
         app.scheduler.scheduleAll(alarms)
+        runCatching { SnoozeScheduler.restore(context) }
+            .onFailure { Log.e(TAG, "Could not restore snooze", it) }
+        TodayAlarmsWidget.requestUpdate(context)
         Log.i(
             TAG,
             "Rescheduled ${alarms.count { it.enabled }} alarm(s) after ${intent.action}",

@@ -22,6 +22,7 @@ import com.example.morningalarm.alarm.AlarmNotifier
 import com.example.morningalarm.alarm.AlarmScheduler
 import com.example.morningalarm.data.AlarmRepository
 import com.example.morningalarm.ui.theme.MorningAlarmTheme
+import java.time.ZonedDateTime
 
 class MainActivity : ComponentActivity() {
     private lateinit var repository: AlarmRepository
@@ -30,6 +31,9 @@ class MainActivity : ComponentActivity() {
     private var exactAlarmAllowed by mutableStateOf(true)
     private var notificationsAllowed by mutableStateOf(true)
     private var fullScreenIntentAllowed by mutableStateOf(true)
+
+    /** Refreshed on resume so the "next" preview does not go stale. */
+    private var now by mutableStateOf(ZonedDateTime.now())
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -47,14 +51,31 @@ class MainActivity : ComponentActivity() {
         setContent {
             MorningAlarmTheme {
                 val alarms by repository.alarms.collectAsStateWithLifecycle()
+                val difficulty by app.traceSettings.difficulty.collectAsStateWithLifecycle()
+                var preview by androidx.compose.runtime.remember { mutableStateOf(false) }
+                if (preview) AlarmPreviewDialog(difficulty, onDismiss = { preview = false })
                 MainScreen(
+                    traceDifficulty = difficulty,
+                    onTraceDifficultyChange = {
+                        runCatching { app.traceSettings.setDifficulty(it) }.onFailure { error ->
+                            Toast.makeText(this, error.message ?: "設定を保存できませんでした", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    onPreviewAlarm = { preview = true },
                     alarms = alarms,
                     exactAlarmAllowed = exactAlarmAllowed,
                     notificationsAllowed = notificationsAllowed,
                     fullScreenIntentAllowed = fullScreenIntentAllowed,
-                    onAddAlarm = { hour, minute, label ->
+                    now = now,
+                    onAddAlarm = { hour, minute, label, days ->
                         persistOrToast {
-                            scheduler.schedule(repository.add(hour, minute, label))
+                            scheduler.schedule(repository.add(hour, minute, label, days))
+                        }
+                    },
+                    onEditAlarm = { alarm, hour, minute, label, days ->
+                        persistOrToast {
+                            val updated = repository.update(alarm.id, hour, minute, label, days)
+                            if (updated != null) scheduler.schedule(updated)
                         }
                     },
                     onToggleAlarm = { alarm, enabled ->
@@ -76,6 +97,24 @@ class MainActivity : ComponentActivity() {
                             AlarmNotifier.cancel(this, alarm.id)
                         }
                     },
+                    onSkipNext = { alarm ->
+                        persistOrToast {
+                            val updated = repository.skipNext(alarm.id)
+                            if (updated != null) scheduler.schedule(updated)
+                        }
+                    },
+                    onSetNextTime = { alarm, time ->
+                        persistOrToast {
+                            val updated = repository.setNextTimeOverride(alarm.id, time)
+                            if (updated != null) scheduler.schedule(updated)
+                        }
+                    },
+                    onClearNextAdjustment = { alarm ->
+                        persistOrToast {
+                            val updated = repository.clearNextAdjustment(alarm.id)
+                            if (updated != null) scheduler.schedule(updated)
+                        }
+                    },
                     onEditSummary = {
                         startActivity(Intent(this, SummaryEditorActivity::class.java))
                     },
@@ -95,6 +134,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        now = ZonedDateTime.now()
         refreshPermissionState()
         // Also repairs alarms after the user grants a permission in Settings.
         scheduler.scheduleAll(repository.alarms.value)

@@ -68,15 +68,6 @@ object AlarmNotifier {
      */
     fun buildRingingNotification(context: Context, alarm: Alarm): Notification {
         val fullScreenIntent = ringPendingIntent(context, alarm.id)
-        val stopIntent = Intent(context, AlarmService::class.java)
-            .setAction(AlarmService.ACTION_STOP)
-            .putExtra(AlarmService.EXTRA_ALARM_ID, alarm.id)
-        val stopPendingIntent = PendingIntent.getService(
-            context,
-            AlarmScheduler.requestCodeFor(alarm.id),
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
         val title = alarm.label.ifBlank { context.getString(R.string.alarm_notification_title) }
         val time = String.format(java.util.Locale.JAPAN, "%02d:%02d", alarm.hour, alarm.minute)
 
@@ -94,8 +85,21 @@ object AlarmNotifier {
             .setOnlyAlertOnce(false)
             .setShowWhen(true)
             .setSound(null)
-            .addAction(0, context.getString(R.string.alarm_stop), stopPendingIntent)
+            .addAction(0, "図形をなぞって停止", fullScreenIntent)
             .build()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showSnoozed(context: Context, alarm: Alarm) {
+        if (!canPostNotifications(context)) return
+        val open = ringPendingIntent(context, alarm.id)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("5分スヌーズ中")
+            .setContentText("完全停止するには開いて図形をなぞってください")
+            .setContentIntent(open).setOngoing(true).setSilent(true)
+            .addAction(0, "図形をなぞって解除", open).build()
+        runCatching { NotificationManagerCompat.from(context).notify(notificationId(alarm.id), notification) }
     }
 
     fun cancel(context: Context, alarmId: Long) {

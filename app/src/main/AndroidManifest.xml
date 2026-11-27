@@ -60,6 +60,22 @@
             android:name=".ui.SummaryEditorActivity"
             android:exported="false" />
 
+        <receiver
+            android:name=".widget.TodayAlarmsWidget"
+            android:exported="false"
+            android:label="@string/widget_next_alarm_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/today_alarms_widget_info" />
+        </receiver>
+
+        <receiver android:name=".alarm.SnoozeReceiver" android:exported="false" />
+
         <!-- Explicit PendingIntent only; never exported. -->
         <receiver
             android:name=".alarm.AlarmReceiver"

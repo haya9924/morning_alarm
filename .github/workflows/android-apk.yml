@@ -1,0 +1,42 @@
+name: Android APK
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
+      - name: Run unit tests and assemble debug APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 --no-parallel --console=plain
+      - name: Verify and package APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/morning-alarm-debug.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose dist/morning-alarm-debug.apk
+          cd dist
+          sha256sum morning-alarm-debug.apk > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morning-alarm-debug-apk
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
