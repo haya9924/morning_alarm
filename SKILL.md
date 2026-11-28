@@ -11,7 +11,7 @@ description: Androidの「朝のまとめ」をHermesからADBなしで更新す
 
 ## 朝のまとめの更新（ADBは使わない）
 
-管理者が先に [READMEのHermes連携手順](https://github.com/haya9924/morning_alarm#hermesから更新するadb不要) を済ませた環境で使います。ユーザーの指示または設定済みの定期タスクに従って自己完結型のHTMLをUTF-8（最大256 KiB）でローカルファイルに保存し、運用時に指定されたリポジトリの配置先で `python3 tools/hermes_summary.py publish /path/to/summary.html` を実行します。`{{date}}` はAndroid側で展開されます。WebViewではJavaScriptと外部リソースを使えません。
+管理者が先に [READMEのHermes連携手順](https://github.com/haya9924/morning_alarm#hermesから更新するadb不要) を済ませた環境で使います。端末への配信は非公開HTTPSリバースプロキシでも、Tailscale内の直接HTTP（`serve --host <Tailscale IP>`）でもかまいません。どちらも公開Funnelや `0.0.0.0` 待ち受けにはしません。ユーザーの指示または設定済みの定期タスクに従って自己完結型のHTMLをUTF-8（最大256 KiB）でローカルファイルに保存し、運用時に指定されたリポジトリの配置先で `python3 tools/hermes_summary.py publish /path/to/summary.html` を実行します。`{{date}}` はAndroid側で展開されます。WebViewではJavaScriptと外部リソースを使えません。
 
 成功時は「Hermes側で公開済み」と報告します。端末の取得成功は確認できません。端末はまとめを開くか「今すぐ同期」を押したときに取得します。トークンは参照・出力せず、同期不能時もADBや外部公開に切り替えません。
 

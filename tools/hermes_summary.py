@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Publish a morning-summary HTML file locally and serve it via a private HTTPS proxy."""
+"""Publish a morning-summary HTML file locally and serve it over loopback or Tailscale."""
 
 import argparse
 import hmac
+import ipaddress
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import sys
 import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -14,6 +16,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 ROUTE = "/v1/morning-summary"
 MAX_BYTES = 256 * 1024
 TOKEN = re.compile(rb"[A-Za-z0-9_-]{43}")
+
+LOOPBACK_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+)
+TAILSCALE_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+)
 
 
 def replace_private(path, data):
@@ -34,6 +45,44 @@ def read_html(path):
     if len(body) > MAX_BYTES or not body.decode("utf-8").strip():
         raise ValueError("HTML must be nonblank UTF-8 and no larger than 256 KiB")
     return body
+
+
+def parse_bind_address(host):
+    """Return the parsed address for a loopback or Tailscale literal, or raise ValueError.
+
+    Only IP literals are accepted. Hostnames, wildcard binds (0.0.0.0, ::), LAN and
+    public addresses are refused so the plain-HTTP server is never exposed beyond
+    loopback or the Tailscale tailnet.
+    """
+    text = host.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    if not text:
+        raise ValueError("host must be a loopback or Tailscale IP address")
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        raise ValueError(
+            f"host must be a loopback or Tailscale IP literal, not {host!r}"
+        ) from None
+    if any(address in network for network in LOOPBACK_NETWORKS):
+        return address
+    if any(address in network for network in TAILSCALE_NETWORKS):
+        return address
+    raise ValueError(
+        f"host {address} is not loopback or Tailscale "
+        "(allowed: 127.0.0.0/8, ::1/128, 100.64.0.0/10, fd7a:115c:a1e0::/48)"
+    )
+
+
+class IPv6HTTPServer(HTTPServer):
+    address_family = socket.AF_INET6
+
+
+def server_for(address, port, state):
+    """Bind an IPv6 socket for IPv6 literals, IPv4 otherwise."""
+    server_class = IPv6HTTPServer if address.version == 6 else HTTPServer
+    return server_class((str(address), port), handler_for(state))
 
 
 def handler_for(state):
@@ -86,8 +135,31 @@ def main():
     commands.add_parser("revoke-token", help="remove the current read token")
     publish = commands.add_parser("publish", help="atomically replace the latest HTML")
     publish.add_argument("file", type=Path)
-    serve = commands.add_parser("serve", help="serve only on 127.0.0.1; use a private HTTPS proxy")
-    serve.add_argument("--port", type=int, default=3647)
+    serve = commands.add_parser(
+        "serve",
+        help="serve plain HTTP on loopback or a Tailscale IP (default 127.0.0.1)",
+        description=(
+            "Serve plain HTTP on a loopback or Tailscale address only. "
+            "Use --host 100.x.y.z (or a fd7a:115c:a1e0::/48 address) to let the "
+            "phone reach the host directly over Tailscale, or keep the default "
+            "127.0.0.1 and put a private HTTPS reverse proxy in front of it."
+        ),
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=3647,
+        help="TCP port to bind (default: 3647)",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "bind address: loopback (127.0.0.0/8, ::1) or Tailscale "
+            "(100.64.0.0/10, fd7a:115c:a1e0::/48) IP literal only "
+            "(default: 127.0.0.1)"
+        ),
+    )
     args = parser.parse_args()
     state = args.state_dir.expanduser()
     try:
@@ -102,7 +174,10 @@ def main():
             replace_private(state / "latest.html", read_html(args.file))
             print("Published on Hermes host; Android sync has not been confirmed.")
         else:
-            with HTTPServer(("127.0.0.1", args.port), handler_for(state)) as server:
+            address = parse_bind_address(args.host)
+            with server_for(address, args.port, state) as server:
+                shown = f"[{address}]" if address.version == 6 else str(address)
+                print(f"Serving on http://{shown}:{args.port}{ROUTE}")
                 server.serve_forever()
     except KeyboardInterrupt:
         return 0

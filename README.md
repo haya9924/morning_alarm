@@ -52,8 +52,13 @@ GitHub Actions の **Android APK** でも、テストを通過したデバッグ
 ### Hermesから更新する（ADB不要）
 
 1. Hermesと同じホスト・ユーザーで `python3 tools/hermes_summary.py rotate-token` を初回に1度実行します。生成された `~/.local/state/morning-alarm-summary/token` の値を、チャットやログに貼らず端末へ安全に渡します。
-2. ホストで `python3 tools/hermes_summary.py serve` を継続実行します（Python 3.9以降、待ち受けは `127.0.0.1:3647` のみ）。端末から届く**非公開HTTPS**リバースプロキシ（例: Tailscale Serve）で `/v1/morning-summary` をこのポートへ転送し、`Authorization` ヘッダーを保持してください。Funnel等で公開したり、既存のルートを上書きしたりしないでください。
-3. Androidアプリの「朝のまとめ」編集 →「Hermes連携」で `https://<ホスト>/v1/morning-summary` と読み取りトークンを入力し、「設定して同期」を選びます。
+2. ホストで `python3 tools/hermes_summary.py serve` を継続実行します（Python 3.9以降、既定の待ち受けは `127.0.0.1:3647` のみ）。接続方法は次のどちらかです。
+   - **非公開HTTPSリバースプロキシ（従来）**: 端末から届く非公開HTTPS（例: Tailscale Serve）で `/v1/morning-summary` を `127.0.0.1:3647` へ転送し、`Authorization` ヘッダーを保持します。Funnel等で公開したり、既存のルートを上書きしたりしないでください。
+   - **Tailscale経由の直接HTTP**: `python3 tools/hermes_summary.py serve --host <Tailscale IP>` で、TailscaleのIP（`100.64.0.0/10` または `fd7a:115c:a1e0::/48`）に直接待ち受けます。`--host` はループバックかTailscaleのIPリテラルのみ受け付け、`0.0.0.0`・LAN/公開IP・ホスト名は拒否します。TLS終端はなく、通信はTailscaleの暗号化トンネル内だけです。Funnelや `0.0.0.0` で外部へ公開しないでください。
+3. Androidアプリの「朝のまとめ」編集 →「Hermes連携」でURLと読み取りトークンを入力し、「設定して同期」を選びます。
+   - HTTPSは任意のホスト: `https://<ホスト>/v1/morning-summary`
+   - HTTPは**Tailscale限定**: `http://100.x.x.x:3647/v1/morning-summary` または `http://<ホスト>.ts.net:3647/v1/morning-summary`（IPv6は `http://[fd7a:115c:a1e0::1]:3647/v1/morning-summary`）
+   - `http://` はTailscaleのIPv4（`100.64.0.0/10`）・IPv6（`fd7a:115c:a1e0::/48`）・`*.ts.net` 以外はアプリが拒否します。既定ポートはHTTPSが443、HTTPが80で省略されます。
 4. 以後、Hermesはホストで `python3 tools/hermes_summary.py publish /path/to/summary.html` を実行するだけです。UTF-8のHTML（256 KiB以下）が置き換わります。`{{date}}` は端末の表示時刻に展開されます。
 
 端末はまとめ画面を開いたときに自動取得します。取得に失敗した場合は前回取得した内容、まだ一度も取得できていなければ手動版を表示します。「今すぐ同期」でも確認できます。バックグラウンドで定期同期したり、端末へ直接プッシュしたりはしません。「連携を解除」で手動版に戻ります。漏えい時はホストの `revoke-token` で読み取りを停止し、`rotate-token` で再発行して端末に再設定してください。失効してもオフライン表示用の端末キャッシュは自動削除されません。
@@ -72,7 +77,7 @@ adb shell am broadcast -n "$COMPONENT" -a "$PREFIX.SET_ENABLED" --el id 1 --ez e
 adb shell am broadcast -n "$COMPONENT" -a "$PREFIX.DELETE_ALARM" --el id 1
 ```
 
-IDは一覧・作成結果を使ってください。このADBインターフェースはアラーム操作専用です。朝のまとめの更新には上記のHTTPS連携を使います。
+IDは一覧・作成結果を使ってください。このADBインターフェースはアラーム操作専用です。朝のまとめの更新には上記のHTTPS／Tailscale HTTP連携を使います。
 
 ## 既知の制約
 

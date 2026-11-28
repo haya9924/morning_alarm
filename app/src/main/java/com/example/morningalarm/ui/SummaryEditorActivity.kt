@@ -86,7 +86,7 @@ class SummaryEditorActivity : ComponentActivity() {
                                     }
                                     connected = sync.currentConfig() != null
                                     syncMessage = when (result) {
-                                        null -> "HTTPS URLとトークンを確認してください。設定できませんでした。"
+                                        null -> "URLとトークンを確認してください。設定できませんでした。"
                                         true -> "Hermesから取得しました。"
                                         false -> "設定しましたが取得できませんでした。接続先とトークンを確認してください。"
                                     }
@@ -154,7 +154,20 @@ private fun HermesSettings(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("連携中は朝のまとめを開いたときに取得します。オフライン時は前回の内容を表示します。")
-                    OutlinedTextField(url, { url = it }, label = { Text("HTTPS URL") }, singleLine = true)
+                    Text(
+                        "HTTPSはどのホストでも可（例: https://hermes.example.com/v1/morning-summary）。" +
+                            "HTTPはTailscale限定（例: http://100.x.x.x:3647/v1/morning-summary、" +
+                            "http://host.tailnet.ts.net:3647/v1/morning-summary）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        url,
+                        { url = it },
+                        label = { Text("URL（HTTPS / Tailscale HTTP）") },
+                        placeholder = { Text("http://100.x.x.x:3647/v1/morning-summary") },
+                        singleLine = true,
+                    )
                     OutlinedTextField(token, { token = it }, label = { Text("読み取りトークン") },
                         singleLine = true, visualTransformation = PasswordVisualTransformation())
                     if (connected) {

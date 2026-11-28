@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP is permitted at the platform level so the app can reach a
+  Hermes host over Tailscale without a TLS terminator.
+
+  Android <domain-config> cannot express the Tailscale IPv4 CGNAT range
+  (100.64.0.0/10) or the Tailscale IPv6 ULA prefix (fd7a:115c:a1e0::/48);
+  it only matches exact hosts and *.subdomain names. The Tailscale-only
+  cleartext policy is therefore enforced in app code by HermesSummaryClient,
+  which rejects every http:// endpoint outside those ranges except *.ts.net.
+  The summary WebView blocks network loads entirely, so it never uses this.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

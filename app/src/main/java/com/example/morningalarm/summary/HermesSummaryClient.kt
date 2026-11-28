@@ -15,20 +15,40 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.net.ssl.HttpsURLConnection
 
 /**
  * Opt-in client for a Hermes-hosted morning summary.
  *
- * Only an exact HTTPS endpoint is accepted: no userinfo, query, fragment, or
- * malformed host. The dedicated bearer token is sent only on the request and is
- * never included in failures or logs. Redirects are not followed, the platform
- * default TLS configuration is used, and both timeouts and the streamed body
- * size are bounded.
+ * Accepted endpoints:
+ * - `https://` for any valid host (default port 443 is elided).
+ * - `http://` only for Tailscale endpoints: CGNAT IPv4 `100.64.0.0/10`, ULA
+ *   IPv6 `fd7a:115c:a1e0::/48`, or a MagicDNS `*.ts.net` name. Plain HTTP is
+ *   otherwise rejected, so cleartext is never sent to arbitrary hosts.
+ *
+ * No userinfo, query, fragment, or malformed host is accepted. The dedicated
+ * bearer token is sent only on the request and is never included in failures or
+ * logs. Redirects are not followed, the platform default TLS configuration is
+ * used for HTTPS, and both timeouts and the streamed body size are bounded.
  *
  * [fetch] is blocking; callers are responsible for using Dispatchers.IO.
  */
-class HermesSummaryClient {
+class HermesSummaryClient internal constructor(
+    private val connectionFactory: (String) -> HttpURLConnection,
+) {
+    /**
+     * Production client: re-validates the (already normalized) endpoint and
+     * opens a real connection for it. The endpoint policy lives here as well as
+     * in [Config.parse] so a directly constructed [Config] cannot make the app
+     * talk cleartext to a non-Tailscale host.
+     */
+    constructor() : this({ endpoint ->
+        if (normalizeSummaryEndpoint(endpoint) != endpoint) {
+            throw IOException("Invalid summary endpoint")
+        }
+        URL(endpoint).openConnection() as? HttpURLConnection
+            ?: throw IOException("Invalid summary endpoint")
+    })
+
     /** A normalized endpoint plus its dedicated bearer token. */
     data class Config(
         val endpoint: String,
@@ -57,18 +77,23 @@ class HermesSummaryClient {
     /**
      * Fetches the summary HTML.
      *
-     * @throws IOException on an invalid configuration, network/TLS failure,
-     * non-200 response, redirect, wrong content type, oversized body, invalid
-     * UTF-8, or a blank body. Error messages never contain the URL or token.
+     * The endpoint is expected to come from [Config.parse], which enforces the
+     * HTTPS / Tailscale-only-HTTP policy; the default connection factory
+     * re-applies that policy, while an injected factory (unit tests) is called
+     * as-is. The token is re-checked here so a directly constructed [Config]
+     * cannot smuggle a malformed credential.
+     *
+     * @throws IOException on an invalid token, network/TLS failure, non-200
+     * response, redirect, wrong content type, oversized body, invalid UTF-8, or
+     * a blank body. Error messages never contain the URL or token.
      */
     fun fetch(config: Config): String {
-        val validated = Config.parse(config.endpoint, config.token).getOrElse {
+        if (!SUMMARY_TOKEN_REGEX.matches(config.token)) {
             throw IOException("Invalid summary configuration")
         }
 
         val connection = try {
-            URL(validated.endpoint).openConnection() as? HttpsURLConnection
-                ?: throw IOException("Invalid summary endpoint")
+            connectionFactory(config.endpoint)
         } catch (e: IOException) {
             throw e
         } catch (e: RuntimeException) {
@@ -87,7 +112,7 @@ class HermesSummaryClient {
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.doInput = true
-            connection.setRequestProperty("Authorization", "Bearer ${validated.token}")
+            connection.setRequestProperty("Authorization", "Bearer ${config.token}")
             connection.setRequestProperty("Accept", "text/html")
             connection.setRequestProperty("Accept-Encoding", "identity")
 
@@ -156,23 +181,48 @@ class HermesSummaryClient {
 private val SUMMARY_TOKEN_REGEX = Regex("[A-Za-z0-9_-]{43}")
 private val HOST_LABEL_REGEX = Regex("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 private val IPV6_CHARS_REGEX = Regex("[0-9a-f:.]+")
+private const val TS_NET_SUFFIX = ".ts.net"
+
+/** First 6 bytes (48 bits) of the Tailscale IPv6 ULA prefix fd7a:115c:a1e0::/48. */
+private val TAILSCALE_IPV6_PREFIX = byteArrayOf(
+    0xfd.toByte(),
+    0x7a,
+    0x11,
+    0x5c,
+    0xa1.toByte(),
+    0xe0.toByte(),
+)
+
+private const val HTTPS_DEFAULT_PORT = 443
+private const val HTTP_DEFAULT_PORT = 80
 
 /**
- * Returns a canonical HTTPS URL, or null for anything that is not an exact
- * server-based HTTPS endpoint without userinfo/query/fragment and with a valid
- * host. The path is preserved (empty becomes "/") and the host is lowercased.
+ * Returns a canonical URL, or null for anything that is not an exact
+ * server-based endpoint without userinfo/query/fragment and with a valid host.
+ *
+ * `https://` accepts any valid host. `http://` is accepted only when the host is
+ * a Tailscale CGNAT IPv4 address (100.64.0.0/10), a Tailscale IPv6 ULA address
+ * (fd7a:115c:a1e0::/48), or a `*.ts.net` MagicDNS name; every other cleartext
+ * endpoint is rejected. The path is preserved (empty becomes "/"), the host is
+ * lowercased, and the scheme default port (443/80) is elided.
  */
 private fun normalizeSummaryEndpoint(raw: String): String? {
     if (raw.isEmpty() || raw.any { it.isWhitespace() || it.code < 0x20 }) return null
     val uri = runCatching { URI(raw) }.getOrNull() ?: return null
     if (!uri.isAbsolute || uri.isOpaque) return null
-    if (uri.scheme == null || !uri.scheme.equals("https", ignoreCase = true)) return null
+    val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return null
+    if (scheme != "https" && scheme != "http") return null
     if (uri.rawUserInfo != null || uri.rawQuery != null || uri.rawFragment != null) return null
     val authority = uri.rawAuthority
     if (authority.isNullOrEmpty() || authority.contains('@')) return null
 
     val host = uri.host ?: return null
-    val normalizedHost = normalizeSummaryHost(host) ?: return null
+    val cleartext = scheme == "http"
+    val normalizedHost = if (cleartext) {
+        normalizeTailscaleHost(host) ?: return null
+    } else {
+        normalizeSummaryHost(host) ?: return null
+    }
     val port = uri.port
     if (port != -1 && port !in 1..65535) return null
 
@@ -180,10 +230,12 @@ private fun normalizeSummaryEndpoint(raw: String): String? {
     val path = if (rawPath.isEmpty()) "/" else rawPath
     if (!path.startsWith("/")) return null
 
+    val defaultPort = if (cleartext) HTTP_DEFAULT_PORT else HTTPS_DEFAULT_PORT
     return buildString {
-        append("https://")
+        append(scheme)
+        append("://")
         append(normalizedHost)
-        if (port != -1 && port != 443) {
+        if (port != -1 && port != defaultPort) {
             append(':')
             append(port)
         }
@@ -191,22 +243,85 @@ private fun normalizeSummaryEndpoint(raw: String): String? {
     }
 }
 
+/**
+ * Returns the canonical host when it is a Tailscale endpoint, or null otherwise.
+ *
+ * Only `100.64.0.0/10`, `fd7a:115c:a1e0::/48` (verified on the parsed address
+ * bytes, not just the text), and `*.ts.net` names are accepted. Bare `ts.net`,
+ * single-label names, and look-alikes such as `not-ts.net` are rejected.
+ */
+private fun normalizeTailscaleHost(host: String): String? {
+    val lower = host.lowercase(Locale.ROOT)
+    if (lower.length !in 1..253) return null
+
+    if (lower.startsWith("[")) {
+        val address = parseBracketedIpv6(lower) ?: return null
+        if (!address.address.hasPrefix(TAILSCALE_IPV6_PREFIX)) return null
+        return lower
+    }
+
+    if (lower.contains(':')) return null
+
+    if (lower.length > TS_NET_SUFFIX.length && lower.endsWith(TS_NET_SUFFIX)) {
+        return normalizeDnsLabels(lower)
+    }
+
+    val octets = parseStrictIpv4(lower) ?: return null
+    if (octets[0] != 100 || octets[1] !in 64..127) return null
+    return lower
+}
+
+/**
+ * Parses a dotted-quad IPv4 address strictly: exactly four decimal octets in
+ * 0..255 with no leading zeros (only "0" itself may start with a zero).
+ */
+private fun parseStrictIpv4(host: String): IntArray? {
+    val parts = host.split('.')
+    if (parts.size != 4) return null
+    val octets = IntArray(4)
+    for (index in 0 until 4) {
+        val part = parts[index]
+        if (part.isEmpty() || part.length > 3) return null
+        if (part.length > 1 && part[0] == '0') return null
+        if (!part.all { it in '0'..'9' }) return null
+        val value = part.toInt()
+        if (value !in 0..255) return null
+        octets[index] = value
+    }
+    return octets
+}
+
+private fun ByteArray.hasPrefix(prefix: ByteArray): Boolean {
+    if (size < prefix.size) return false
+    for (index in prefix.indices) {
+        if (this[index] != prefix[index]) return false
+    }
+    return true
+}
+
 private fun normalizeSummaryHost(host: String): String? {
     val lower = host.lowercase(Locale.ROOT)
     if (lower.length !in 1..253) return null
 
     if (lower.startsWith("[")) {
-        if (!lower.endsWith("]")) return null
-        val inner = lower.substring(1, lower.length - 1)
-        if (inner.isEmpty() || !inner.contains(':') || !IPV6_CHARS_REGEX.matches(inner)) {
-            return null
-        }
-        val address = runCatching { InetAddress.getByName(inner) }.getOrNull()
-        if (address !is Inet6Address) return null
-        return "[$inner]"
+        parseBracketedIpv6(lower) ?: return null
+        return lower
     }
 
     if (lower.contains(':')) return null
+    return normalizeDnsLabels(lower)
+}
+
+private fun parseBracketedIpv6(lower: String): Inet6Address? {
+    if (!lower.endsWith("]")) return null
+    val inner = lower.substring(1, lower.length - 1)
+    if (inner.isEmpty() || !inner.contains(':') || !IPV6_CHARS_REGEX.matches(inner)) {
+        return null
+    }
+    return runCatching { InetAddress.getByName(inner) }.getOrNull() as? Inet6Address
+}
+
+private fun normalizeDnsLabels(lower: String): String? {
     val labels = lower.split('.')
     if (labels.any { it.isEmpty() || !HOST_LABEL_REGEX.matches(it) }) return null
     return lower
